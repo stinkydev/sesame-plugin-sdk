@@ -1,0 +1,18 @@
+{
+  "id": "com.example.color-generator",
+  "types": {
+    "com.example.color-generator": {
+      "displayName": "Color Generator",
+      "category": "Generators",
+      "description": "A solid colour, settable from config or at runtime over a control track.",
+      "icon": "icon.svg",
+      "params": {
+        "color": { "description": "Fill colour, with optional alpha" }
+      },
+      "metadata": {
+        "com.example.color-generator.state.v1": { "description": "The current colour, published on every change" },
+        "com.example.color-generator.set.v1": { "description": "Set the colour: {\"color\": \"#rrggbb\"}" }
+      }
+    }
+  }
+}

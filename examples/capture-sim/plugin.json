@@ -1,0 +1,17 @@
+{
+  "id": "com.example.capture-sim",
+  "types": {
+    "com.example.capture-sim": {
+      "displayName": "Capture Simulator",
+      "category": "Capture",
+      "description": "Stands in for a capture card: moving colour bars and a tone in the size and pixel format you pick, on its own clock.",
+      "params": {
+        "format": { "group": "Signal", "description": "Pixel format the simulated card delivers" },
+        "width": { "group": "Signal", "unit": "px", "step": 2, "description": "0 uses the render size" },
+        "height": { "group": "Signal", "unit": "px", "step": 2, "description": "0 uses the render size" },
+        "speed": { "group": "Pattern", "unit": "px/frame" },
+        "tone": { "group": "Pattern", "description": "1 kHz at -20 dBFS on every channel" }
+      }
+    }
+  }
+}
