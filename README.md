@@ -49,8 +49,9 @@ cmake --build build --config Release
 
 Each plugin is placed in its own folder under `build/Release/plugins/`. Copy
 these folders into the Sesame plugin directory (`plugins` next to `sesame.exe`
-on Windows, `/usr/lib/sesame/plugins` on Linux) and restart Sesame. The log
-lists each registered type:
+on Windows, `/usr/lib/sesame/plugins` on Linux, or the directories named in the
+`SESAME_PLUGIN_DIRS` environment variable) and restart Sesame. The log lists
+each registered type:
 
 ```
 Registered source plugin 'com.example.capture-sim' 1.0.0 from .../plugins/sesame-capture-sim/sesame-capture-sim.dll
@@ -71,6 +72,10 @@ The interface version is `SESAME_PLUGIN_ABI_MAJOR.SESAME_PLUGIN_ABI_MINOR`, curr
 versions add fields at the end of structs and add optional functions, so a
 plugin built against an earlier minor version works with later Sesame versions.
 See [Versioning](docs/guide.md#versioning).
+
+The SDK is published at [github.com/stinkydev/sesame-plugin-sdk](https://github.com/stinkydev/sesame-plugin-sdk),
+tagged with the Sesame release it shipped with (`v1.0.6-beta2`), so a plugin can be built against the SDK of the
+Sesame version it targets.
 
 ## License
 

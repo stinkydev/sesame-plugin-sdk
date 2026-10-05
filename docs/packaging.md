@@ -74,8 +74,8 @@ Copy the plugin folder into a plugin directory:
 
 - Windows: `plugins` next to `sesame.exe`.
 - Linux: `/usr/lib/sesame/plugins`.
-- Or any directories listed in the `SESAME_PLUGIN_DIRS` environment variable
-  (separated by `;` on Windows and `:` on Linux), which replaces the default.
+- Or the directories listed in the `SESAME_PLUGIN_DIRS` environment variable, separated by `;` on Windows and `:`
+  on Linux. When it is set, only those directories are scanned, not the default one.
 
 Sesame loads plugins at startup and keeps them loaded until it exits.
 Installing or updating a plugin requires a restart. A library placed directly
