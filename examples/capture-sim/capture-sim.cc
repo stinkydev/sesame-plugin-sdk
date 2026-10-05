@@ -5,18 +5,22 @@
 //
 //  - declaring the signal with set_video_format and set_audio_format, in any
 //    pixel format, size, row padding and scan, and changing it at runtime;
-//  - a capture thread of the plugin's own that assigns each frame to an engine
-//    frame with get_frame_info, then acquires, fills and submits a slot;
-//  - interlaced frames, submitted on even engine frames only;
-//  - audio pushed with engine timestamps, either locked to the video like SDI
-//    embedded audio or on an independent clock like an AES67 stream;
+//  - a capture thread of the plugin's own that stamps each frame with the time
+//    on the device's clock, then acquires, fills and submits a slot; the host
+//    measures that clock and places the frames on engine frames;
+//  - interlaced frames, one per two frame periods, carrying both fields;
+//  - audio pushed with the time of its first sample on the same clock, in any
+//    sample format, layout and rate;
 //  - status text and JSON, and a clock the engine can run from.
 //
-// The library's second type, com.example.stream-sim, is a DEVICE-timed source
-// such as a network receiver: it stamps frames and audio with its own clock,
-// which runs clockPpm fast or slow, delivers them up to jitterMs late, and
-// requests a default buffer with set_target_buffer. The host measures the
-// clock, buffers the frames and places them on engine frames.
+// The device's clock runs clockPpm fast or slow against the computer's. With
+// the simulator used as the engine's clock, the engine follows it and the
+// host measures no drift; otherwise the host drops or repeats a frame now and
+// then, evenly, and resamples the audio.
+//
+// The library's second type, com.example.stream-sim, is the same source as a
+// network receiver sees it: frames arrive up to jitterMs late, and it asks for
+// a default buffer with set_target_buffer.
 //
 // The pixels and samples come from test-pattern.h. A real plugin gets them
 // from its hardware.
@@ -89,11 +93,6 @@ const sesame_enum_value SAMPLE_RATE_VALUES[] = {
     {"96000", "96 kHz"},
 };
 
-const sesame_enum_value AUDIO_CLOCK_VALUES[] = {
-    {"locked", "Locked to video (SDI)"},
-    {"independent", "Independent (AES67, NDI)"},
-};
-
 // key, label, type, default, min, max, enum values, enum count
 const sesame_param_def PARAMS[] = {
     {"speed", "Bar speed (px/frame)", SESAME_PARAM_INT, "4", 0, 1024, nullptr, 0},
@@ -110,25 +109,12 @@ const sesame_param_def PARAMS[] = {
     {"audioPlanar", "Planar audio", SESAME_PARAM_BOOL, "false", 0, 0, nullptr, 0},
     {"audioRate", "Audio sample rate", SESAME_PARAM_ENUM, "48000", 0, 0, SAMPLE_RATE_VALUES,
      std::size(SAMPLE_RATE_VALUES)},
-    {"audioClock", "Audio clock", SESAME_PARAM_ENUM, "locked", 0, 0, AUDIO_CLOCK_VALUES, std::size(AUDIO_CLOCK_VALUES)},
-    {"audioClockPpm", "Independent clock offset (ppm)", SESAME_PARAM_FLOAT, "0", -10000, 10000, nullptr, 0},
-};
-
-const sesame_param_def STREAM_PARAMS[] = {
     {"clockPpm", "Clock offset (ppm)", SESAME_PARAM_FLOAT, "0", -10000, 10000, nullptr, 0},
+    // The stream simulator's own: the rest are shared, so the stream type declares the whole table too.
     {"jitterMs", "Arrival jitter (ms)", SESAME_PARAM_FLOAT, "0", 0, 1000, nullptr, 0},
     {"bufferFrames", "Buffer it asks for (frames)", SESAME_PARAM_INT, "3", 2, 60, nullptr, 0},
-    {"speed", "Bar speed (px/frame)", SESAME_PARAM_INT, "4", 0, 1024, nullptr, 0},
-    {"tone", "1 kHz tone", SESAME_PARAM_BOOL, "true", 0, 0, nullptr, 0},
-    {"format", "Pixel format", SESAME_PARAM_ENUM, "rgba", 0, 0, FORMAT_VALUES, std::size(FORMAT_VALUES)},
-    {"width", "Width (0 = render size)", SESAME_PARAM_INT, "0", 0, 8192, nullptr, 0},
-    {"height", "Height (0 = render size)", SESAME_PARAM_INT, "0", 0, 8192, nullptr, 0},
-    {"scan", "Scan", SESAME_PARAM_ENUM, "progressive", 0, 0, SCAN_VALUES, std::size(SCAN_VALUES)},
-    {"audioFormat", "Audio sample format", SESAME_PARAM_ENUM, "s16", 0, 0, SAMPLE_FORMAT_VALUES,
-     std::size(SAMPLE_FORMAT_VALUES)},
-    {"audioRate", "Audio sample rate", SESAME_PARAM_ENUM, "48000", 0, 0, SAMPLE_RATE_VALUES,
-     std::size(SAMPLE_RATE_VALUES)},
 };
+constexpr uint32_t CAPTURE_PARAM_COUNT = 13;  // up to clockPpm
 
 /** A parameter's value. The host always passes every declared parameter, so the fallback is for safety only. */
 const char* param(const sesame_param* p, uint32_t n, const char* key, const char* fallback) {
@@ -179,6 +165,10 @@ struct CaptureSim {
   std::atomic<uint32_t> alpha{255};
   std::atomic<bool> interlaced{false};
 
+  // The device's clock: the computer's monotonic clock, running clock_rate times as fast.
+  std::chrono::steady_clock::time_point epoch = std::chrono::steady_clock::now();
+  std::atomic<double> clock_rate{1.0};
+
   // Capture thread and its state.
   std::atomic<bool> running{false};
   std::thread worker;
@@ -186,18 +176,27 @@ struct CaptureSim {
   ToneGenerator tone_generator;
   std::vector<uint8_t> pcm;  // one frame of audio, reused
   sesame_audio_format audio{};
-  double audio_clock = 1.0;      // device audio clock against the engine clock, from audioClockPpm
   double audio_remainder = 0.0;  // fractional samples carried to the next frame
 
   std::atomic<uint64_t> frames{0};
   std::atomic<uint64_t> dropped{0};
 
-  // Stream simulator only: its own clock, arrival jitter, and random delays from a fixed seed.
+  // Stream simulator only: arrival jitter, from a fixed seed.
   bool stream = false;
-  double clock_ppm = 0.0;
   int64_t jitter_us = 0;
   std::mt19937 random{42};
 };
+
+/** Microseconds of the computer's clock since the instance was created. */
+int64_t host_elapsed_us(const CaptureSim* s) {
+  using namespace std::chrono;
+  return duration_cast<microseconds>(steady_clock::now() - s->epoch).count();
+}
+
+/** The device's clock now, which the frames and audio are stamped with. */
+int64_t device_now_us(const CaptureSim* s) {
+  return static_cast<int64_t>(static_cast<double>(host_elapsed_us(s)) * s->clock_rate.load());
+}
 
 // ---------------------------------------------------------------------------
 // Signal format
@@ -255,43 +254,15 @@ sesame_bool apply_format(CaptureSim* s, const sesame_param* p, uint32_t n) {
   audio.channels = s->info.audio_channels;  // must equal the instance's configured channel count
   audio.format = parse_sample_format(param(p, n, "audioFormat", "s16"));
   audio.planar = param_bool(p, n, "audioPlanar") ? 1 : 0;
-  // Audio on its own clock asks the host to follow its timestamps by resampling.
-  const bool independent = std::strcmp(param(p, n, "audioClock", "locked"), "independent") == 0;
-  audio.drift_compensation = independent ? 1 : 0;
   if (!s->host->set_audio_format(s->ctx, &audio)) return 0;
   s->audio = audio;
-  s->audio_clock = independent ? 1.0 + (std::strtod(param(p, n, "audioClockPpm", "0"), nullptr) / 1e6) : 1.0;
   return 1;
 }
 
-// ---------------------------------------------------------------------------
-// Audio
-// ---------------------------------------------------------------------------
-
-/**
- * Pushes one engine frame's worth of tone, stamped with the engine time the
- * frame's audio starts at. With audioClockPpm the simulated device clock runs
- * fast or slow, so it delivers slightly more or fewer samples per engine frame
- * than the nominal rate.
- */
-void push_frame_audio(CaptureSim* s, uint32_t frame) {
-  const sesame_audio_format& f = s->audio;
-  if (f.channels == 0) return;
-  const int64_t start_us = s->host->audio_timestamp_for_frame(s->ctx, frame);
-  const int64_t end_us = s->host->audio_timestamp_for_frame(s->ctx, frame + 1);
-  const double exact =
-      (static_cast<double>(end_us - start_us) * f.sample_rate * s->audio_clock / 1e6) + s->audio_remainder;
-  const auto samples = static_cast<uint32_t>(exact);
-  s->audio_remainder = exact - samples;
-  if (samples == 0) return;
-  s->tone_generator.generate(f, samples, s->tone.load(), &s->pcm);
-  s->host->push_audio(s->ctx, s->pcm.data(), samples, start_us);
-}
-
-/** Audio has no gaps: every engine frame since the last one gets its samples, including frames without video. */
-void push_audio_through(CaptureSim* s, uint32_t last_frame, uint32_t frame) {
-  const uint32_t first = last_frame == 0 ? frame : last_frame + 1;
-  for (uint32_t f = first; f <= frame; f++) push_frame_audio(s, f);
+void apply_settings(CaptureSim* s, const sesame_param* p, uint32_t n) {
+  s->speed = std::atoi(param(p, n, "speed", "4"));
+  s->tone = param_bool(p, n, "tone");
+  s->clock_rate = 1.0 + (std::strtod(param(p, n, "clockPpm", "0"), nullptr) / 1e6);
 }
 
 // ---------------------------------------------------------------------------
@@ -308,130 +279,65 @@ void report_status(CaptureSim* s) {
   s->host->set_status(s->ctx, SESAME_STATE_ONLINE, text, json);
 }
 
-void capture_loop(CaptureSim* s) {
-  const int64_t frame_us =
-      s->info.fps_num > 0 ? static_cast<int64_t>(1000000.0 * s->info.fps_den / s->info.fps_num) : 20000;
-  uint32_t last_frame = 0;
-  while (s->running.load()) {
-    // Decide which engine frame the next captured frame belongs to. The engine renders `next_frame` soon, so the
-    // frame after that leaves a full frame period for acquiring, filling and uploading the slot.
-    uint32_t next_frame = 0;
-    int64_t offset_us = 0;
-    uint32_t frame = 0;
-    if (s->host->get_frame_info(s->ctx, &next_frame, &offset_us)) {
-      frame = next_frame + 2;
-      if (frame <= last_frame) {
-        // This engine frame already has its frame: wait for the next engine frame to start.
-        std::this_thread::sleep_for(std::chrono::microseconds(std::max<int64_t>(frame_us - offset_us, 500)));
-        continue;
-      }
-    } else {
-      // No engine timing yet: run at the nominal frame rate.
-      frame = last_frame + 1;
-      std::this_thread::sleep_for(std::chrono::microseconds(frame_us));
-    }
+/** The frame's audio: its exact share of samples at the device's rate, stamped with the frame's time. */
+void push_frame_audio(CaptureSim* s, int64_t device_us, double frame_us) {
+  const sesame_audio_format& f = s->audio;
+  if (f.channels == 0) return;
+  const double exact = (frame_us * f.sample_rate / 1e6) + s->audio_remainder;
+  const auto samples = static_cast<uint32_t>(exact);
+  s->audio_remainder = exact - samples;
+  if (samples == 0) return;
+  s->tone_generator.generate(f, samples, s->tone.load(), &s->pcm);
+  s->host->push_audio(s->ctx, s->pcm.data(), samples, device_us);
+}
 
-    // An interlaced frame holds two fields and covers two engine frames, so it is submitted on even frames only.
-    if (s->interlaced.load() && (frame & 1) != 0) {
-      push_audio_through(s, last_frame, frame);
-      last_frame = frame;
+/**
+ * Captures a frame every frame period of the device's clock. The engine's
+ * frame rate is the nominal rate; the device's clock makes it run clockPpm
+ * fast or slow against the computer's. Each frame is stamped with the device
+ * time it was captured at, whatever the time it is handed over at: the stream
+ * simulator hands frames over up to jitter_us late.
+ */
+void capture_loop(CaptureSim* s) {
+  const double frame_us = s->info.fps_num > 0 ? 1e6 * s->info.fps_den / s->info.fps_num : 20000.0;
+  uint64_t index = 0;
+  int64_t handover_us = -1;  // device time at which the frame is handed to the host
+  while (s->running.load()) {
+    // An interlaced frame carries two fields: one frame per two frame periods.
+    const bool interlaced = s->interlaced.load();
+    const double device_frame_us = frame_us * (interlaced ? 2.0 : 1.0);
+    const auto device_us = static_cast<int64_t>(static_cast<double>(index) * device_frame_us);
+    if (handover_us < 0) {
+      std::uniform_int_distribution<int64_t> delay(0, s->jitter_us);
+      handover_us = device_us + (s->jitter_us > 0 ? delay(s->random) : 0);
+    }
+    if (device_now_us(s) < handover_us) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
       continue;
     }
 
     // Acquire a slot. It fails when every slot is still in use; a device would drop this frame.
     sesame_frame_slot* slot = nullptr;
-    if (!s->host->acquire_frame(s->ctx, &slot)) {
-      s->dropped++;
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      continue;
-    }
-
-    // Fill it in the slot's own format, which is the format declared when the slot was acquired.
-    s->bars.paint(slot, frame, s->speed.load(), static_cast<uint8_t>(s->alpha.load()));
-    slot->frame = frame;
-    slot->alpha_mode = SESAME_ALPHA_STRAIGHT;
-    slot->timecode_frames = frame;
-    slot->timecode_valid = 1;
-    if (s->host->submit_frame(s->ctx, slot, SESAME_FRAME_FROM_HOST)) {
-      if (++s->frames % STATUS_EVERY_FRAMES == 1) report_status(s);
+    if (s->host->acquire_frame(s->ctx, &slot)) {
+      // Fill it in the slot's own format, which is the format declared when the slot was acquired. The painter
+      // counts in engine frames; an interlaced frame's second field is one engine frame later.
+      const auto pattern_frame = static_cast<uint32_t>(interlaced ? index * 2 : index);
+      s->bars.paint(slot, pattern_frame, s->speed.load(), static_cast<uint8_t>(s->alpha.load()));
+      slot->device_time_us = device_us;
+      slot->alpha_mode = SESAME_ALPHA_STRAIGHT;
+      slot->timecode_frames = static_cast<int64_t>(pattern_frame);
+      slot->timecode_valid = 1;
+      if (s->host->submit_frame(s->ctx, slot, SESAME_FRAME_FROM_HOST)) {
+        if (++s->frames % STATUS_EVERY_FRAMES == 1) report_status(s);
+      } else {
+        s->dropped++;
+      }
     } else {
       s->dropped++;
     }
-
-    push_audio_through(s, last_frame, frame);
-    last_frame = frame;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Stream simulator
-// ---------------------------------------------------------------------------
-
-/** Audio for one stretch of the device's own time, stamped with that time. */
-void push_device_audio(CaptureSim* s, int64_t device_us, double duration_us) {
-  const sesame_audio_format& f = s->audio;
-  if (f.channels == 0) return;
-  const double exact = (duration_us * f.sample_rate / 1e6) + s->audio_remainder;
-  const auto samples = static_cast<uint32_t>(exact);
-  s->audio_remainder = exact - samples;
-  if (samples == 0) return;
-  s->tone_generator.generate(f, samples, s->tone.load(), &s->pcm);
-  // A DEVICE-timed source passes device time; the host maps it to engine time.
-  s->host->push_audio(s->ctx, s->pcm.data(), samples, device_us);
-}
-
-/**
- * Sends a frame every frame period of the device's own clock, which runs
- * clock_ppm off the engine's. Each frame arrives up to jitter_us after its
- * ideal time. The loop reads the engine clock only to simulate arrival times;
- * it never assigns engine frames.
- */
-void stream_loop(CaptureSim* s) {
-  const double frame_us = s->info.fps_num > 0 ? 1e6 * s->info.fps_den / s->info.fps_num : 20000.0;
-  uint64_t index = 0;
-  double start_engine_us = -1.0;
-  int64_t next_arrival_us = -1;
-  while (s->running.load()) {
-    uint32_t next_frame = 0;
-    int64_t offset_us = 0;
-    if (!s->host->get_frame_info(s->ctx, &next_frame, &offset_us) || next_frame == 0) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      continue;
-    }
-    const int64_t now_us = s->host->audio_timestamp_for_frame(s->ctx, next_frame - 1) + offset_us;
-    if (start_engine_us < 0) start_engine_us = static_cast<double>(now_us);
-    // An interlaced frame carries two fields: one frame per two engine frame periods.
-    const bool interlaced = s->interlaced.load();
-    const double device_frame_us = frame_us * (interlaced ? 2.0 : 1.0);
-    const double device_us = static_cast<double>(index) * device_frame_us;
-    if (next_arrival_us < 0) {
-      std::uniform_int_distribution<int64_t> delay(0, s->jitter_us);
-      const double ideal = start_engine_us + (device_us / (1.0 + (s->clock_ppm / 1e6)));
-      next_arrival_us = static_cast<int64_t>(ideal) + (s->jitter_us > 0 ? delay(s->random) : 0);
-    }
-    if (now_us < next_arrival_us) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      continue;
-    }
-    sesame_frame_slot* slot = nullptr;
-    if (!s->host->acquire_frame(s->ctx, &slot)) {
-      s->dropped++;
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      continue;
-    }
-    // The painter counts in engine frames; an interlaced frame's second field is one engine frame later.
-    const auto pattern_frame = static_cast<uint32_t>(interlaced ? index * 2 : index);
-    s->bars.paint(slot, pattern_frame, s->speed.load(), static_cast<uint8_t>(s->alpha.load()));
-    slot->device_time_us = static_cast<int64_t>(device_us);
-    slot->alpha_mode = SESAME_ALPHA_STRAIGHT;
-    if (s->host->submit_frame(s->ctx, slot, SESAME_FRAME_FROM_HOST)) {
-      if (++s->frames % STATUS_EVERY_FRAMES == 1) report_status(s);
-    } else {
-      s->dropped++;
-    }
-    push_device_audio(s, static_cast<int64_t>(device_us), device_frame_us);
+    push_frame_audio(s, device_us, device_frame_us);
     index++;
-    next_arrival_us = -1;
+    handover_us = -1;
   }
 }
 
@@ -445,8 +351,7 @@ sesame_instance create(const sesame_host* host, void* ctx, const char* /*id*/, c
   s->host = host;
   s->ctx = ctx;
   s->info = *info;
-  s->speed = std::atoi(param(p, n, "speed", "4"));
-  s->tone = param_bool(p, n, "tone");
+  apply_settings(s, p, n);
   if (!apply_format(s, p, n)) {
     delete s;
     return nullptr;
@@ -459,7 +364,6 @@ sesame_instance create_stream(const sesame_host* host, void* ctx, const char* id
   auto* s = static_cast<CaptureSim*>(create(host, ctx, id, info, p, n));
   if (s == nullptr) return nullptr;
   s->stream = true;
-  s->clock_ppm = std::strtod(param(p, n, "clockPpm", "0"), nullptr);
   s->jitter_us = static_cast<int64_t>(std::strtod(param(p, n, "jitterMs", "0"), nullptr) * 1000.0);
   // The buffer this transport needs by default; the operator's config can override it.
   host->set_target_buffer(ctx, static_cast<uint32_t>(std::strtoul(param(p, n, "bufferFrames", "3"), nullptr, 10)));
@@ -471,7 +375,7 @@ void destroy(sesame_instance self) { delete static_cast<CaptureSim*>(self); }
 sesame_bool start(sesame_instance self) {
   auto* s = static_cast<CaptureSim*>(self);
   s->running = true;
-  s->worker = s->stream ? std::thread(stream_loop, s) : std::thread(capture_loop, s);
+  s->worker = std::thread(capture_loop, s);
   return 1;
 }
 
@@ -487,15 +391,14 @@ sesame_bool can_update(sesame_instance, const sesame_param*, uint32_t) { return 
 sesame_bool update(sesame_instance self, const sesame_param* p, uint32_t n) {
   auto* s = static_cast<CaptureSim*>(self);
   if (!apply_format(s, p, n)) return 0;
-  s->speed = std::atoi(param(p, n, "speed", "4"));
-  s->tone = param_bool(p, n, "tone");
+  apply_settings(s, p, n);
   return 1;
 }
 
-// The engine calls this on its timer thread when the instance is used as clock; it must not block.
-sesame_bool get_clock(sesame_instance, sesame_clock_time* time) {
-  using namespace std::chrono;
-  time->now_us = static_cast<uint64_t>(duration_cast<microseconds>(steady_clock::now().time_since_epoch()).count());
+// The engine calls this on its timer thread when the instance is used as clock; it must not block. It is the
+// clock the frames are stamped with, so with the engine running from it the host measures no drift.
+sesame_bool get_clock(sesame_instance self, sesame_clock_time* time) {
+  time->now_us = static_cast<uint64_t>(device_now_us(static_cast<CaptureSim*>(self)));
   time->start_us = 0;
   return 1;
 }
@@ -513,12 +416,11 @@ const sesame_plugin_descriptor DESCRIPTOR = {
     .has_video = 1,
     .max_audio_channels = 2,
     .params = PARAMS,
-    .param_count = std::size(PARAMS),
-    .source_mode = SESAME_SOURCE_PUSH,
-    .provides_clock = 1,
+    .param_count = CAPTURE_PARAM_COUNT,
     .ring_depth = 4,
 };
 
+// No produce makes it a PUSH source; get_clock lets the engine run from it.
 const sesame_source_vtable VTABLE = {
     .struct_size = sizeof(sesame_source_vtable),
     .create = create,
@@ -538,10 +440,8 @@ const sesame_plugin_descriptor STREAM_DESCRIPTOR = {
     .kind = SESAME_PLUGIN_SOURCE,
     .has_video = 1,
     .max_audio_channels = 2,
-    .params = STREAM_PARAMS,
-    .param_count = std::size(STREAM_PARAMS),
-    .source_mode = SESAME_SOURCE_PUSH,
-    .source_timing = SESAME_TIMING_DEVICE,
+    .params = PARAMS,
+    .param_count = std::size(PARAMS),
 };
 
 const sesame_source_vtable STREAM_VTABLE = {

@@ -128,7 +128,7 @@ void BarPainter::paint(sesame_frame_slot* slot, uint32_t frame, int speed, uint8
   const uint32_t h = slot->height;
   const size_t pitch = slot->pitch_bytes;
   uint8_t* base = slot->host_data;
-  // The bars only change along x, so each field's colours are worked out once per frame.
+  // The bars only change along x, so each field's colors are worked out once per frame.
   const int bits = bits_of(slot->pixel_format);
   for (int field = 0; field < 2; field++) {
     rgb_[field].resize(w);

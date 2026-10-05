@@ -1,13 +1,13 @@
 /* Copyright (c) 2022-2026 Stinky Computing AB. SPDX-License-Identifier: MIT (see LICENSE in the SDK folder) */
 
-// Colour generator: a PULL source that fills its frame with one colour. It
+// Color generator: a PULL source that fills its frame with one color. It
 // demonstrates:
 //
 //  - produce(), called by the host once per engine frame on its worker thread;
 //  - returning SESAME_FRAME_NONE while nothing changed, which keeps the
 //    previous frame and costs no upload;
-//  - a colour parameter changed at runtime through update();
-//  - metadata: the current colour is published as state on
+//  - a color parameter changed at runtime through update();
+//  - metadata: the current color is published as state on
 //    com.example.color-generator.state.v1, and a JSON payload
 //    {"color":"#rrggbb"} on com.example.color-generator.set.v1 sets it.
 
@@ -37,8 +37,8 @@ const sesame_param_def PARAMS[] = {
 
 // id, label, receive (0 = published by the plugin, 1 = received), format
 const sesame_metadata_def METADATA[] = {
-    {STATE_ID, "Colour state", 0, "json"},
-    {SET_ID, "Set colour", 1, "json"},
+    {STATE_ID, "Color state", 0, "json"},
+    {SET_ID, "Set color", 1, "json"},
 };
 
 const char* param(const sesame_param* p, uint32_t n, const char* key, const char* fallback) {
@@ -75,7 +75,7 @@ struct ColorGen {
   std::atomic<bool> changed{true};  // the next produce() writes a frame
 };
 
-/** Publishes the colour as state and shows it in the status. */
+/** Publishes the color as state and shows it in the status. */
 void publish_color(ColorGen* g) {
   const uint32_t c = g->rgba.load();
   char json[64];
@@ -166,7 +166,6 @@ const sesame_plugin_descriptor DESCRIPTOR = {
     .param_count = std::size(PARAMS),
     .metadata = METADATA,
     .metadata_count = std::size(METADATA),
-    .source_mode = SESAME_SOURCE_PULL,
 };
 
 const sesame_source_vtable VTABLE = {

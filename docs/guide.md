@@ -1,6 +1,6 @@
 # Writing a Sesame Plugin
 
-This guide describes the structure of a plugin and the behaviour of the
+This guide describes the structure of a plugin and the behavior of the
 interface. The header, [`sesame-plugin.h`](../include/sesame-plugin.h), defines
 every struct and function. Byte layouts of the pixel and sample formats are in
 [formats.md](formats.md); packaging, installation and testing are in
@@ -84,7 +84,6 @@ static const sesame_plugin_descriptor DESCRIPTOR = {
     .name = "Frame Counter",
     .version = "1.0.0",
     .kind = SESAME_PLUGIN_OUTPUT,
-    .has_video = 1,
     .video_delivery = SESAME_VIDEO_HOST,
     .output_format = SESAME_PIXEL_UYVY,
 };
@@ -239,7 +238,7 @@ GPU memory. Fill one and pass the matching flag when returning the slot:
 `slot->stream` or be complete when the slot is returned.
 
 **Alpha.** RGBA8 and BGRA8 carry alpha; UYVA and PA16 carry a key plane. Set
-`slot->alpha_mode` to `SESAME_ALPHA_PREMULTIPLIED` if the colour is
+`slot->alpha_mode` to `SESAME_ALPHA_PREMULTIPLIED` if the color is
 premultiplied by alpha. The default is straight alpha. The other YUV formats are
 opaque.
 
@@ -248,17 +247,18 @@ timecode to the frame.
 
 ### PULL and PUSH
 
-The descriptor's `source_mode` selects one of two modes.
+A source is one of two kinds, and its vtable says which: a source with
+`produce` is a PULL source, a source without is a PUSH source.
 
-In **PULL** mode (`SESAME_SOURCE_PULL`) the host runs a worker thread and calls
-`produce(self, slot)` once per engine frame, two frames ahead of rendering. This
-mode suits generators and other sources driven by the engine.
+A **PULL** source is driven by the engine: the host runs a worker thread and
+calls `produce(self, slot)` once per engine frame, two frames ahead of
+rendering. This suits generators and other sources that render on demand.
 
 - `slot->frame` is the engine frame to produce, and `slot->budget_us` the time
   remaining until it is needed.
 - Fill a buffer and return `SESAME_FRAME_FROM_HOST` or
   `SESAME_FRAME_FROM_DEVICE`. Returning `SESAME_FRAME_NONE` keeps the previous
-  frame; the colour generator example does this while its colour is unchanged.
+  frame; the color generator example does this while its color is unchanged.
 - A source with audio calls `write_audio` once inside `produce`, with exactly
   `slot->audio_samples_needed` samples per channel at the source's audio rate.
   The per-frame counts sum exactly to the sample rate. If `write_audio` is not
@@ -269,31 +269,34 @@ mode suits generators and other sources driven by the engine.
 A PULL source without video receives `produce` calls with slots that have no
 buffers, for its audio.
 
-In **PUSH** mode (`SESAME_SOURCE_PUSH`) the plugin runs its own threads, started
-in `start` and joined in `stop`. This mode suits devices and streams. For each
-frame:
+A **PUSH** source runs at its own pace, on its own clock: a capture card, a
+network receiver, a device. The plugin runs its own threads, started in `start`
+and joined in `stop`, and for each frame:
 
-1. Call `acquire_frame`. It returns 0 when all slots are in use; retry after a
+1. Calls `acquire_frame`. It returns 0 when all slots are in use; retry after a
    short wait, or skip the frame.
-2. Fill the slot. Set `slot->frame` to the engine frame the frame belongs to, or
-   for a DEVICE-timed source `slot->device_time_us` to its device time (see
-   [Placing source frames](#placing-source-frames)).
-3. Call `submit_frame` with the `SESAME_FRAME_FROM_*` flag, or `release_frame` to
-   return the slot unused. Submit slots in the order they were acquired.
+2. Fills the slot and sets `slot->device_time_us` to the frame's time on the
+   device's clock (see [Timestamps](#timestamps)).
+3. Calls `submit_frame` with the `SESAME_FRAME_FROM_*` flag, or `release_frame`
+   to return the slot unused. Slots are submitted in the order they were
+   acquired.
 
 Audio is passed with `push_audio`, together with the time of its first sample
-(see [Source audio timing](#source-audio-timing)).
+on the same clock. The host measures the device's clock against the engine's,
+buffers the frames, and places each one on an engine frame: the source can run
+at any frame rate (see [Placing source frames](#placing-source-frames)).
 
-The ring has `ring_depth` slots: 4 by default, at most 16. In both modes a
-frame reaches the screen one frame plus the ring's buffering after it is
-produced.
+The ring has `ring_depth` slots: 4 by default, at most 16. For a PUSH source
+the host enlarges the ring to hold its buffer. A PULL frame reaches the screen
+one frame plus the ring's buffering after it is produced; a PUSH frame reaches
+it after the source's buffer.
 
 ### Interlaced sources
 
 For an interlaced signal, set `field_order` to `SESAME_FIELD_TOP_FIRST` or
-`SESAME_FIELD_BOTTOM_FIRST` and submit one slot per interlaced frame, on even
-engine frames, for example 1080i50 into a 50 fps engine. The host shows the
-first field on the slot's engine frame and the second field on the following
+`SESAME_FIELD_BOTTOM_FIRST` and deliver one slot per interlaced frame, for
+example 1080i50 into a 50 fps engine. The host places it on an even engine
+frame and shows the first field there and the second field on the following
 engine frame, each line-doubled.
 
 Fields are interleaved row by row by default. With `field_sequential` set, the
@@ -387,18 +390,15 @@ their own timing to it.
 
 ### Time bases
 
-The interface uses four time bases.
+The interface uses three time bases.
 
 | Time base | What it is | Where it appears |
 |---|---|---|
-| Engine frame number | Counts engine frames from the start of the engine. 32 bits. | `slot->frame`, `sesame_output_frame.frame`, `get_frame_info`, every `*_for_frame` function |
+| Engine frame number | Counts engine frames from the start of the engine. 32 bits. | `slot->frame`, `sesame_output_frame.frame`, `clock_time_for_frame` |
 | Engine clock time | Microseconds on the clock the engine's frame timer runs from (see [The engine clock](#the-engine-clock)). With a PTP clock, this is PTP time. | `clock_time_for_frame`, `sesame_output_frame.clock_time_us`, `sesame_output_audio.clock_time_us` |
-| Engine audio time | Microseconds of engine audio since the start of the engine, derived from the frame number at 48 kHz. | `audio_timestamp_for_frame`, `push_audio` from ENGINE-timed sources |
-| Device time | Microseconds on a source's own clock, with any origin. | `slot->device_time_us`, `push_audio` from DEVICE-timed sources |
+| Device time | Microseconds on a PUSH source's own clock, with any origin. | `slot->device_time_us`, `push_audio` |
 
-`get_frame_info` returns the next engine frame number and the time elapsed in
-the current frame on the engine clock. `clock_time_for_frame` and
-`audio_timestamp_for_frame` can be called by any instance, from any thread.
+`clock_time_for_frame` can be called by any instance, from any thread.
 
 ### The engine clock
 
@@ -406,10 +406,10 @@ The engine renders one frame per frame period of the engine clock. By default
 the engine clock is a monotonic clock of the host. A source or an output can
 provide the engine clock instead:
 
-1. Set `provides_clock` in the descriptor and implement `get_clock` in the
-   source or output vtable. It returns the current time in microseconds,
-   `now_us`, and the clock value `start_us` at which frame 0 started.
-   `get_clock` is called on the timer thread and must return without blocking.
+1. Implement `get_clock` in the source or output vtable. It returns the current
+   time in microseconds, `now_us`, and the clock value `start_us` at which frame
+   0 started. `get_clock` is called on the timer thread and must return without
+   blocking.
 2. The operator enables **Use as clock** on one instance. The engine's frame
    timer then runs from that instance's clock.
 
@@ -418,77 +418,106 @@ For an absolute clock, return `start_us = 0`: frames then start at whole
 multiples of the frame period since the clock's epoch.
 
 A capture or playout card locked to a house reference provides its reference as
-the clock, so that the engine runs in step with the card. The capture simulator
-and the interlaced sink example types both provide a clock.
+the clock, so that the engine runs in step with the card. A PUSH source that
+provides the clock stamps its frames with the same clock, and the host then
+measures no drift. The capture simulator and the interlaced sink example types
+both provide a clock.
 
 ### PTP
 
 A source or output locked to PTP (IEEE 1588, SMPTE ST 2059) can provide PTP
-time as the engine clock: `now_us` is PTP time in microseconds and `start_us` is 0. Engine
-frames then start on the ST 2059 alignment points, and engine clock time is PTP
-time.
+time as the engine clock: `now_us` is PTP time in microseconds and `start_us`
+is 0. Engine frames then start on the ST 2059 alignment points, and engine clock
+time is PTP time.
 
-- **Receivers** compare the RTP timestamps of incoming media with
-  `clock_time_for_frame` to assign it to engine frames, and use ENGINE timing.
+- **Receivers** stamp frames and audio with their RTP timestamps, scaled to
+  microseconds. Against a PTP-locked engine the host measures no drift, and
+  frames land on the engine frames their timestamps say.
 - **Senders** derive RTP timestamps from `clock_time_us` of each output frame and
   audio block.
 
 When one instance provides the clock, every other PTP-locked source and output
 in the same Sesame shares it.
 
+### Timestamps
+
+A PUSH source stamps every frame (`slot->device_time_us`) and every audio block
+(`push_audio`) with a time on the device's own clock, in microseconds. The host
+measures that clock against the engine's and relies on the timestamps for
+everything that follows, so they must meet these requirements:
+
+- **They run at the device's rate.** One frame period of the device is one
+  frame period of the clock. Use the time the device captured or received the
+  frame: a card's hardware timestamp, a receiver's RTP timestamp scaled from
+  its media clock to microseconds, a device position counter. Do not use the
+  time `submit_frame` is called at: that adds the delivery jitter to the
+  clock, which the host then measures as wander.
+- **The origin is free.** The host measures rate and offset; only differences
+  between timestamps matter. Unwrap counters that wrap, such as 32-bit RTP
+  timestamps.
+- **Video and audio share one clock.** A video frame and the audio captured
+  with it carry the same time. With PTP-locked senders they do, since both RTP
+  timestamps count from the PTP epoch. A source whose audio comes from another
+  clock than its video should time it from the video's clock, or deliver it
+  as a separate audio-only source.
+- **Times increase.** Consecutive frames have increasing times, and audio
+  blocks are contiguous: each block starts where the previous one ended. A time
+  that goes back, or that jumps ahead by more than half a second, is a new
+  timeline: the host starts the measurement over, and audio starts over at the
+  new time. After a signal loss or a reconnect that is the right thing; in
+  normal running it must not happen.
+- **No smoothing, no pacing.** Hand frames over as they arrive, stamped with
+  their own times. The host absorbs arrival jitter with the source's buffer,
+  and the source's status shows how much jitter there is.
+
 ### Placing source frames
 
-The descriptor's `source_timing` selects how a PUSH source's frames are assigned
-to engine frames.
+The host measures a PUSH source's clock from the timestamps: first with a line
+fitted through the arrivals of the first seconds, then with a slow tracking
+loop. The clock is **measured** once its rate is known to within a few ppm, which
+a hardware-stamped source reaches in seconds. Each frame is placed on the
+engine frame nearest to its mapped time plus a buffer, at whatever frame rate
+the source runs:
 
-**ENGINE timing** (`SESAME_TIMING_ENGINE`, the default). The plugin sets
-`slot->frame` itself. A capture thread uses `get_frame_info` to find the next
-engine frame; the capture simulator example assigns each captured frame to the
-frame after next, which leaves a full frame period for filling and uploading the
-slot. This mode suits sources that run from the engine clock, or provide it, or
-share it through PTP. If the source's clock and the engine clock differ, the
-source must drop or repeat frames itself.
+- At the engine's rate, every frame shows once. A device clock that runs fast
+  or slow costs a dropped or repeated frame at even intervals, one every 200
+  seconds at 100 ppm and 50 fps.
+- Slower than the engine, such as 25p into 50p, each frame holds for its
+  duration. Faster, such as 60p into 50p, the frames that share an engine frame
+  are left out. Other rates, such as 24p into 50p, get an even cadence of
+  holds. None of this counts as drift.
+- Interlaced sources move in whole frames, so the top field stays on even
+  engine frames.
 
-**DEVICE timing** (`SESAME_TIMING_DEVICE`, PUSH sources only). The plugin stamps
-each frame with `slot->device_time_us` and passes audio to `push_audio` with
-device time. The host measures the device clock against the engine clock: first
-with a line fitted through about fifteen seconds of arrivals, then with a slow
-tracking loop. Each frame is placed on the engine frame nearest to its mapped
-time plus a buffer. A device clock that runs fast or slow costs a dropped or
-repeated frame at even intervals, one every 200 seconds at 100 ppm and 50 fps.
-Interlaced sources move in whole frames, so the top field stays on even engine
-frames. This mode suits network receivers and devices that are not locked to the
-engine clock.
+The source's first second is spent measuring, during which nothing is shown.
 
-The buffer of a DEVICE-timed source absorbs arrival jitter. The plugin requests
-a default with `set_target_buffer` from `create`, for example more for a network
-receiver than for a local card. The operator's `bufferFrames` setting in the
-source's config takes precedence. The buffer is at least 2 frames, rounded up to
-an even count for interlaced sources, and the host does not change it.
+The buffer absorbs arrival jitter. The plugin requests a default with
+`set_target_buffer` from `create`, for example more for a network receiver than
+for a local card. The operator's `bufferFrames` setting in the source's config
+takes precedence. The buffer is at least 2 frames, rounded up to an even count
+for interlaced sources, and the host does not change it.
 
-The source's status reports the timing in `timing`: the clock state (acquiring
-or locked), the measured drift in ppm, the buffer and its target, and counts of
-frames that arrived late (the previous frame was shown), were dropped, or were
-repeated. Late frames indicate jitter larger than the buffer. The stream
-simulator example type, `com.example.stream-sim`, demonstrates the mode with a
-configurable clock offset, jitter and buffer.
+The source's status reports the timing in `timing`: the clock state (measuring
+or measured), the measured drift in ppm, the buffer and its target, and the
+count of frames that arrived late (the previous frame was shown). Late frames
+indicate jitter larger than the buffer. When the largest arrival jitter over
+the last minute needs a bigger buffer than the target, the status suggests one
+in `suggested_buffer_frames`; the host does not apply it. A stall, where frames
+arrive late and then in a burst, counts as late frames and keeps the measured
+clock. A delay that changes and stays for two seconds moves the source's timing
+by it in one step. The stream simulator example type, `com.example.stream-sim`,
+demonstrates this with a configurable clock offset, jitter and buffer.
 
 ### Source audio timing
 
-- **Audio locked to video**, such as SDI embedded audio, with ENGINE timing.
-  Each frame carries its exact share of samples. Push each frame's samples with
-  the engine audio time of its frame, from `audio_timestamp_for_frame`, and leave
-  `drift_compensation` off. When the source drops or repeats a frame, its audio
-  is dropped or repeated with it.
-- **Audio with an independent clock**, such as AES67 and SMPTE ST 2110-30
-  streams, NDI, and USB or analog interfaces, with ENGINE timing. Set
-  `drift_compensation` in the audio format (PUSH sources only) and push audio
-  with engine audio times. The host writes the audio contiguously from the first
-  timestamp and uses later timestamps as the target position. Small differences
-  are corrected by gradual resampling. After a large jump the host restarts the
-  audio at the pushed timestamp and counts a resync in the status.
-- **DEVICE timing.** Push audio with device time. The host maps it with the
-  measured clock and resamples it at the measured rate, contiguously.
+- **PULL sources** deliver each frame's samples inside `produce`. They play at
+  the frame's time; a frame the engine skips takes its audio with it.
+- **PUSH sources** push audio with the time of its first sample on the device's
+  clock. The host maps it with the measured clock and resamples it at the
+  measured rate, written back to back, so the audio stays continuous whatever
+  the video does. This covers audio locked to the video, such as SDI embedded
+  audio, and audio on the same clock as the video but in its own blocks, such
+  as ST 2110-30 beside ST 2110-20.
 
 ### Output timing
 
@@ -504,13 +533,13 @@ times plus its own latency.
 | Source or output | Timing | Setup |
 |---|---|---|
 | Generator | engine | PULL |
-| SDI or HDMI card locked to the house reference | engine; the card is the clock | PUSH, ENGINE timing, `provides_clock` with **Use as clock**, audio locked to video |
-| SDI or HDMI card not locked to the engine clock | the card's own clock | PUSH, DEVICE timing, audio in device time |
-| SMPTE ST 2110 receiver, facility on PTP | PTP | PUSH, ENGINE timing; one instance provides PTP as the clock (`start_us = 0`); frames assigned by RTP timestamp with `clock_time_for_frame` |
-| SRT, NDI or other network receiver | the sender's clock | PUSH, DEVICE timing, `set_target_buffer` for the network's jitter |
-| AES67 or ST 2110-30 audio, engine not on PTP | the stream's clock | PUSH, `drift_compensation`, or DEVICE timing |
+| SDI or HDMI card locked to the house reference | the card is the clock | PUSH, `get_clock` with **Use as clock**; frames and audio stamped from the card's clock |
+| SDI or HDMI card not locked to the engine clock | the card's own clock | PUSH, frames and audio stamped from the card's clock |
+| SMPTE ST 2110 receiver, facility on PTP | PTP | PUSH, frames and audio stamped with RTP timestamps; one instance provides PTP as the clock (`start_us = 0`) |
+| SRT, NDI or other network receiver | the sender's clock | PUSH, frames stamped with the sender's timestamps, `set_target_buffer` for the network's jitter |
+| AES67 or ST 2110-30 audio | the stream's clock | PUSH without video, audio stamped with RTP timestamps |
 | SMPTE ST 2110 sender | PTP | RTP timestamps from `clock_time_us` |
-| SDI output card locked to the house reference | engine; the card is the clock | `provides_clock` on the output with **Use as clock** |
+| SDI output card locked to the house reference | the card is the clock | `get_clock` on the output with **Use as clock** |
 | SDI output card, unlocked | engine | Frames as delivered |
 
 ## Metadata and control
@@ -537,8 +566,8 @@ concurrent with the plugin's threads, and for an output on the output thread
 between frames. The host queues at most 64 items per instance and counts drops
 in the status.
 
-The colour generator example publishes its colour as state and accepts a
-set-colour payload.
+The color generator example publishes its color as state and accepts a
+set-color payload.
 
 ## Versioning
 

@@ -22,27 +22,27 @@
  *
  * Sources deliver frames in their own size and pixel format (set_video_format);
  * the host converts to the engine's RGBA and scales to the source's texture off
- * the render thread. Two modes:
+ * the render thread. A source is one of two kinds, told apart by its vtable:
  *
- *  - PULL: the host runs a worker thread and calls produce() once per engine
- *    frame, two frames ahead of rendering, with a slot already acquired. The
- *    plugin writes pixels (and audio via write_audio) and returns which
- *    memory it wrote. Missing the deadline repeats the previous frame.
- *  - PUSH: the plugin runs its own threads, calls acquire_frame, fills the
- *    slot and calls submit_frame. With ENGINE timing it sets slot->frame to
- *    the engine frame it belongs to, from get_frame_info and
- *    audio_timestamp_for_frame. With DEVICE timing it stamps each frame and
- *    audio block with its own clock, and the host measures that clock against
- *    the engine's, buffers by the operator's setting and places the frames,
- *    dropping or repeating evenly as the clocks drift.
+ *  - PULL (the vtable has produce): the host runs a worker thread and calls
+ *    produce() once per engine frame, two frames ahead of rendering, with a
+ *    slot already acquired. The plugin writes pixels (and audio via
+ *    write_audio) and returns which memory it wrote. Missing the deadline
+ *    repeats the previous frame. For sources that render on demand.
+ *  - PUSH (no produce): the plugin runs its own threads, calls acquire_frame,
+ *    fills the slot, stamps it with the time on the device's own clock and
+ *    calls submit_frame. Audio is pushed with the same clock. The host measures
+ *    that clock against the engine's, buffers by the operator's setting and
+ *    places the frames on engine frames, at any frame rate, dropping or
+ *    repeating evenly as the clocks drift. For capture cards, receivers and
+ *    anything else that delivers at its own pace.
  *
- * A source with provides_clock implements get_clock; when its config says
- * use_as_clock the engine paces rendering from it.
+ * A source or output whose vtable has get_clock can be the engine's clock:
+ * when its config says use_as_clock the engine paces rendering from it.
  *
- * The ENCODED source mode is reserved for a later ABI minor and is rejected by
- * this host. Outputs choose a video delivery: none, device memory, host memory
- * (both in a chosen pixel format), or ENCODED packets from a shared encoder;
- * audio arrives as PCM per mix or as one Opus stream.
+ * Outputs choose a video delivery: none, device memory, host memory (both in
+ * a chosen pixel format), or ENCODED packets from a shared encoder; audio
+ * arrives as PCM per mix or as one Opus stream.
  *
  * Audio crosses in the plugin's own sample format, layout and rate; the host
  * converts to and from the engine's 48 kHz float and resamples as needed.
@@ -73,23 +73,12 @@ typedef void* sesame_cuda_stream; /* CUstream */
 
 typedef enum { SESAME_PLUGIN_SOURCE = 1, SESAME_PLUGIN_OUTPUT = 2 } sesame_plugin_kind;
 
-typedef enum {
-  SESAME_SOURCE_PULL = 0,   /* host worker calls produce() once per frame, two frames ahead */
-  SESAME_SOURCE_PUSH = 1,   /* plugin threads acquire, fill and submit slots themselves */
-  SESAME_SOURCE_ENCODED = 2 /* reserved: not accepted by ABI 1.0 hosts */
-} sesame_source_mode;
-
-typedef enum {
-  SESAME_TIMING_ENGINE = 0, /* the plugin places frames on engine frames itself */
-  SESAME_TIMING_DEVICE = 1  /* PUSH sources: the plugin stamps its own clock; the host syncs it to the engine */
-} sesame_source_timing;
-
 /* Returned by produce() and passed to submit_frame(): which memory of the slot holds the frame. */
 #define SESAME_FRAME_NONE 0u        /* nothing produced; the previous frame stays on screen */
 #define SESAME_FRAME_FROM_HOST 1u   /* host_data was written; the host uploads it */
 #define SESAME_FRAME_FROM_DEVICE 2u /* device_data was written on the slot's stream */
 
-#define SESAME_SOURCE_RING_MAX 16u
+#define SESAME_SOURCE_RING_MAX 16u /* ring_depth limit; PUSH sources get more when their buffer needs it */
 #define SESAME_VIDEO_MAX_DIMENSION 8192u
 
 /*
@@ -136,7 +125,7 @@ typedef enum { SESAME_TRANSFER_SDR = 0, SESAME_TRANSFER_PQ = 1, SESAME_TRANSFER_
 typedef enum { SESAME_PRIMARIES_BT709 = 0, SESAME_PRIMARIES_BT2020 = 1 } sesame_primaries;
 
 typedef enum {
-  SESAME_ALPHA_STRAIGHT = 0,     /* colour is not multiplied by alpha (an opaque frame is straight) */
+  SESAME_ALPHA_STRAIGHT = 0,     /* color is not multiplied by alpha (an opaque frame is straight) */
   SESAME_ALPHA_PREMULTIPLIED = 1 /* fill already multiplied by key */
 } sesame_alpha_mode;
 
@@ -164,14 +153,6 @@ typedef struct {
   uint32_t channels;
   sesame_sample_format format;
   sesame_bool planar;
-  /*
-   * PUSH sources whose audio runs on a clock of its own, unrelated to any video
-   * (AES67 and ST 2110-30 streams, NDI, USB or analog interfaces): the host
-   * writes the audio back to back and resamples it gently to follow the pushed
-   * timestamps. Leave it off for audio locked to video, such as SDI embedded
-   * audio, and push each frame's samples at that frame's timestamp.
-   */
-  sesame_bool drift_compensation;
 } sesame_audio_format;
 
 typedef enum {
@@ -280,9 +261,7 @@ typedef struct {
   uint32_t param_count;
   const sesame_metadata_def* metadata;
   uint32_t metadata_count;
-  sesame_source_mode source_mode;       /* sources only */
   sesame_audio_delivery audio_delivery; /* outputs only */
-  sesame_bool provides_clock;           /* get_clock is implemented */
   uint32_t ring_depth;                  /* sources only: frame slots, 0 = default (4), max 16 */
   sesame_pixel_format output_format;    /* DEVICE and HOST outputs: any pixel format */
   sesame_audio_layout audio_layout;          /* PCM outputs */
@@ -293,7 +272,6 @@ typedef struct {
    * Interlaced output needs a format without vertical chroma subsampling (not NV12, P010 or I420). */
   sesame_field_order output_field_order;
   sesame_bool output_field_sequential; /* interlaced outputs: each field's rows stored together, first field first */
-  sesame_source_timing source_timing;        /* PUSH sources */
 } sesame_plugin_descriptor;
 
 /* Fixed facts about the engine, passed once at create. */
@@ -331,7 +309,7 @@ typedef struct {
  */
 typedef struct sesame_frame_slot {
   uint32_t struct_size;
-  uint32_t frame; /* engine frame this slot is for: set by the host in PULL, by the plugin in PUSH */
+  uint32_t frame; /* PULL: the engine frame to produce, set by the host */
   uint32_t width;
   uint32_t height;
   sesame_pixel_format pixel_format;
@@ -350,7 +328,18 @@ typedef struct sesame_frame_slot {
   sesame_bool timecode_valid;
   sesame_field_order field_order; /* set by the host from the format */
   sesame_bool field_sequential;
-  int64_t device_time_us; /* DEVICE timing: set by the plugin, the frame's time on its own clock */
+  /*
+   * PUSH: set by the plugin, the frame's time on the device's own clock, in
+   * microseconds. The clock may have any origin, but it must run at the rate the
+   * device delivers at, so that one frame period of the device is one frame
+   * period of the clock: a frame's capture time, or an RTP timestamp scaled to
+   * microseconds, not the time submit_frame is called at. Audio pushed from the
+   * same source carries the same clock, so a video frame and the audio captured
+   * with it have the same time. Consecutive frames have increasing times; a
+   * time that goes back, or jumps by more than half a second, starts the
+   * measurement over.
+   */
+  int64_t device_time_us;
 } sesame_frame_slot;
 
 typedef struct {
@@ -463,20 +452,23 @@ typedef struct {
 
   /*
    * PUSH sources, any plugin thread after start. Submit slots in acquisition
-   * order. With DEVICE timing, submit_frame may accept a slot and still drop it
-   * (the clocks drifted, or it arrived after its slot); it only returns 0 for
-   * a bad slot. push_audio then takes device time.
+   * order, with device_time_us set. submit_frame accepts every well-formed slot
+   * and returns 0 only for a bad one; the host may still leave the frame out,
+   * when it arrived after its engine frame or the clocks drifted by a frame,
+   * and counts that in the source's status.
    */
   sesame_bool (*acquire_frame)(void* ctx, sesame_frame_slot** slot); /* 0 when the ring is full */
   sesame_bool (*submit_frame)(void* ctx, sesame_frame_slot* slot, uint32_t flags); /* SESAME_FRAME_FROM_* */
   sesame_bool (*release_frame)(void* ctx, sesame_frame_slot* slot);                /* give back unused */
-  /* Samples per channel in the source's audio format; timestamp_us is the engine time of the first sample. */
-  sesame_bool (*push_audio)(void* ctx, const void* data, uint32_t samples, int64_t timestamp_us);
-
-  /* Any source, any thread: the engine's next frame number and how far into it the clock is. */
-  sesame_bool (*get_frame_info)(void* ctx, uint32_t* next_frame, int64_t* offset_us);
-  /* Audio timestamp (us) at which the given engine frame's audio starts. */
-  int64_t (*audio_timestamp_for_frame)(void* ctx, uint32_t frame);
+  /*
+   * PUSH sources: samples per channel in the source's audio format, in blocks
+   * of any length, from any one thread at a time. device_time_us is the time of
+   * the first sample on the device's clock, the clock the frames are stamped
+   * with (see sesame_frame_slot). The host writes the audio back to back,
+   * resampled to follow that clock, so blocks must be contiguous; a time that
+   * jumps starts the audio over at the new time.
+   */
+  sesame_bool (*push_audio)(void* ctx, const void* data, uint32_t samples, int64_t device_time_us);
 
   /*
    * Any instance, any thread: the engine clock time (us) at which an engine
@@ -489,8 +481,8 @@ typedef struct {
   int64_t (*clock_time_for_frame)(void* ctx, uint32_t frame);
 
   /*
-   * DEVICE-timed sources, from create: the buffer the source needs by default,
-   * in engine frames, e.g. to cover a network's jitter. The operator's config
+   * PUSH sources, from create: the buffer the source needs by default, in
+   * engine frames, e.g. to cover a network's jitter. The operator's config
    * overrides it; the host never goes below 2 frames and rounds interlaced
    * sources up to an even count.
    */
@@ -511,9 +503,13 @@ typedef struct {
 typedef struct {
   uint32_t struct_size;
   SESAME_INSTANCE_COMMON
-  /* PULL mode: fill the slot for slot->frame; return SESAME_FRAME_FROM_HOST/DEVICE or SESAME_FRAME_NONE. */
+  /*
+   * PULL sources: fill the slot for slot->frame; return SESAME_FRAME_FROM_HOST/DEVICE or SESAME_FRAME_NONE.
+   * NULL makes the source a PUSH source.
+   */
   uint32_t (*produce)(sesame_instance self, sesame_frame_slot* slot);
-  /* Sources with provides_clock: read the clock. Called from the engine timer; must be quick and never block. */
+  /* Optional: the source's clock, which the engine can run from. Called from the engine timer; must be quick and
+   * never block. */
   sesame_bool (*get_clock)(sesame_instance self, sesame_clock_time* time);
 } sesame_source_vtable;
 
@@ -524,7 +520,8 @@ typedef struct {
   void (*on_audio)(sesame_instance self, const sesame_output_audio* a);                /* PCM audio */
   void (*on_encoded_video)(sesame_instance self, const sesame_encoded_packet* packet); /* ENCODED video */
   void (*on_encoded_audio)(sesame_instance self, const sesame_encoded_packet* packet); /* OPUS audio */
-  /* Outputs with provides_clock: read the clock. Called from the engine timer; must be quick and never block. */
+  /* Optional: the output's clock, which the engine can run from. Called from the engine timer; must be quick and
+   * never block. */
   sesame_bool (*get_clock)(sesame_instance self, sesame_clock_time* time);
 } sesame_output_vtable;
 

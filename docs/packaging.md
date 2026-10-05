@@ -50,7 +50,7 @@ as fields and ports for its video and audio.
   - `displayName`: the node's title. The default is the descriptor's `name`.
   - `category`: a submenu for the type in the editor's add menu, within
     **Sources** or **Outputs**.
-  - `description`: shown on the node.
+  - `description`: passed to the editor; not shown yet.
   - `icon`: an `.svg` or `.png` file in the folder, at most 256 KiB.
   - `params`, per parameter key: `group` (fields with the same group are shown
     together), `description`, `unit`, `step`, `hidden` (kept in the config but
@@ -126,11 +126,14 @@ look like this in a Sesame config:
   "audioMixIds": ["mix1"], "params": {} }
 ```
 
-- Sources set `audioChannels` (up to the descriptor's `max_audio_channels`) and
-  optionally `useAsClock` for a type that provides a clock.
+- Sources set `audioChannels` (up to the descriptor's `max_audio_channels`).
+  A PUSH source can set `bufferFrames`, the frames Sesame buffers to absorb
+  arrival jitter, overriding the plugin's own default.
 - Outputs name the composition they take (`compositionId`), or the shared
   encoder for encoded video (`encoderId`), and the audio mixes they take
   (`audioMixIds`), a stereo pair each.
+- A source or output whose type provides a clock can set `useAsClock`, and the
+  engine then runs from it.
 - `params` holds the parameters by key, typed as JSON values.
 
 ## Troubleshooting

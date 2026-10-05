@@ -187,7 +187,6 @@ const sesame_plugin_descriptor INTERLACED_SINK = {
     .params = PARAMS,
     .param_count = 1,  // logEvery only
     .audio_delivery = SESAME_AUDIO_PCM,
-    .provides_clock = 1,
     .output_format = SESAME_PIXEL_UYVY,
     .audio_layout = SESAME_AUDIO_LAYOUT_PER_MIX,
     .output_sample_format = SESAME_SAMPLE_F32,

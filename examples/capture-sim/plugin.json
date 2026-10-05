@@ -4,7 +4,7 @@
     "com.example.capture-sim": {
       "displayName": "Capture Simulator",
       "category": "Capture",
-      "description": "Stands in for a capture card: moving colour bars and a tone in the size and pixel format you pick, on its own clock.",
+      "description": "Stands in for a capture card: moving color bars and a tone in the size and pixel format you pick, on its own clock.",
       "params": {
         "format": { "group": "Signal", "description": "Pixel format the simulated card delivers" },
         "width": { "group": "Signal", "unit": "px", "step": 2, "description": "0 uses the render size" },

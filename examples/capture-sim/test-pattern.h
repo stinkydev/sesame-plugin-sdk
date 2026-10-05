@@ -1,6 +1,6 @@
 /* Copyright (c) 2022-2026 Stinky Computing AB. SPDX-License-Identifier: MIT (see LICENSE in the SDK folder) */
 
-// The capture simulator's test signal: moving colour bars in every pixel
+// The capture simulator's test signal: moving color bars in every pixel
 // format, and a sine tone in every sample format. A capture plugin receives
 // these bytes from its hardware; the simulator generates them.
 
@@ -18,7 +18,7 @@ namespace capture_sim {
 size_t sample_width(sesame_sample_format format);
 
 /**
- * Eight vertical colour bars that move `speed` pixels per engine frame. Paints
+ * Eight vertical color bars that move `speed` pixels per engine frame. Paints
  * into a slot in the slot's own size, pixel format, pitch and scan, as a card
  * delivers its native signal.
  */
@@ -39,7 +39,7 @@ class BarPainter {
   };
 
  private:
-  // One row of colours per field, reused every frame.
+  // One row of colors per field, reused every frame.
   std::vector<Rgb> rgb_[2];
   std::vector<Yuv> yuv_[2];
 };

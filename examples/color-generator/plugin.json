@@ -4,14 +4,14 @@
     "com.example.color-generator": {
       "displayName": "Color Generator",
       "category": "Generators",
-      "description": "A solid colour, settable from config or at runtime over a control track.",
+      "description": "A solid color, settable from config or at runtime over a control track.",
       "icon": "icon.svg",
       "params": {
-        "color": { "description": "Fill colour, with optional alpha" }
+        "color": { "description": "Fill color, with optional alpha" }
       },
       "metadata": {
-        "com.example.color-generator.state.v1": { "description": "The current colour, published on every change" },
-        "com.example.color-generator.set.v1": { "description": "Set the colour: {\"color\": \"#rrggbb\"}" }
+        "com.example.color-generator.state.v1": { "description": "The current color, published on every change" },
+        "com.example.color-generator.set.v1": { "description": "Set the color: {\"color\": \"#rrggbb\"}" }
       }
     }
   }

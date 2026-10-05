@@ -25,9 +25,9 @@ any Sesame library.
 
 | Example | Types | Covers |
 |---|---|---|
-| [`color-generator`](examples/color-generator/color-generator.cc) | `com.example.color-generator` | PULL source that produces a frame only when its colour changes; a colour parameter; state published as metadata; a control payload received |
-| [`capture-sim`](examples/capture-sim/capture-sim.cc) | `com.example.capture-sim` | PUSH source that simulates a capture card: its own capture thread, all pixel formats, padded rows, interlace, timestamped audio in all sample formats, JSON status, and a clock the engine can run from. The test signal is generated in [`test-pattern.cc`](examples/capture-sim/test-pattern.cc) |
-| [`null-output`](examples/null-output/null-output.cc) | `com.example.null-output`, `com.example.audio-sink`, `com.example.interlaced-sink` | Outputs: UYVY video in host memory with PCM audio per mix; audio only, multichannel at 96 kHz; interlaced UYVY |
+| [`color-generator`](examples/color-generator/color-generator.cc) | `com.example.color-generator` | PULL source that produces a frame only when its color changes; a color parameter; state published as metadata; a control payload received |
+| [`capture-sim`](examples/capture-sim/capture-sim.cc) | `com.example.capture-sim`, `com.example.stream-sim` | PUSH source that simulates a capture card: its own capture thread stamping frames and audio with the card's clock, all pixel formats, padded rows, interlace, audio in all sample formats, JSON status, and a clock the engine can run from. The stream simulator adds arrival jitter and a default buffer, as a network receiver has. The test signal is generated in [`test-pattern.cc`](examples/capture-sim/test-pattern.cc) |
+| [`null-output`](examples/null-output/null-output.cc) | `com.example.null-output`, `com.example.audio-sink`, `com.example.interlaced-sink` | Outputs: UYVY video in host memory with PCM audio per mix; audio only, multichannel at 96 kHz; interlaced UYVY with a clock the engine can run from |
 
 ## Requirements
 
